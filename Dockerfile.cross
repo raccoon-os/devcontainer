@@ -1,0 +1,53 @@
+# Cross compilation Dockerfile for ARM64
+# Usage: mkdir -p cross_compile/build && docker build . -f Dockerfile.cross --platform linux/arm64 --output cross_compile/out
+
+FROM --platform=linux/arm64 base AS build
+
+ARG USERNAME=rosdev
+ARG UID=1000
+ARG GID=1000
+ARG OVERLAY_WS=/home/rosdev/ros_ws_install
+
+# Create user and workspace
+RUN groupadd -g $GID $USERNAME \
+    && useradd -lm -u $UID -g $USERNAME -s /bin/bash $USERNAME \
+    && echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers \
+    && mkdir -p ${OVERLAY_WS} \
+    && chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}
+
+# Switch to user
+USER $USERNAME
+WORKDIR $OVERLAY_WS
+
+# Setup Python environment
+RUN pip install uv \
+    && ~/.local/bin/uv venv --python 3.12 .venv \
+    && . .venv/bin/activate \
+    && ~/.local/bin/uv pip install \
+        git+https://github.com/colcon/colcon-cargo.git \
+        git+https://github.com/colcon/colcon-ros-cargo.git \
+        colcon-common-extensions \
+        empy==3.3.4 \
+        lark \
+        numpy \
+        Cython \
+        bitstruct \
+        spacepackets
+
+# Build workspace
+RUN --mount=type=bind,target=$OVERLAY_WS/src,source=./src \
+    . /opt/ros/humble/setup.sh && \
+    . .venv/bin/activate && \
+    touch .venv/COLCON_IGNORE && \
+    colcon build \
+        --event-handlers console_direct+ \
+        --packages-up-to thermal_test_controller
+
+# Fix paths for deployment
+RUN sed -i "s@$OVERLAY_WS/.venv/bin/python3@/usr/bin/env python@" $(find . -type f -wholename "./install*/lib/*") && \
+    sed -i "s@COLCON_CURRENT_PREFIX=\"/opt/ros/humble\"@COLCON_CURRENT_PREFIX=\"/usr/opt/ros/humble\"@" ./install/setup.sh && \
+    rm .venv/bin/python
+
+# Create minimal output image
+FROM scratch
+COPY --from=build /home/rosdev/ros_ws_install/install .
